@@ -907,58 +907,208 @@ and volunteers.</p>
       openCheckStatusModal();
     });
 
-    // ── CHECK STATUS MODAL ──
-    function openCheckStatusModal() {
-      document.getElementById('statusInput').value   = '';
-      document.getElementById('statusResult').innerHTML = '';
-      document.getElementById('statusLoading').style.display = 'none';
-      openModal(document.getElementById('checkStatusModal'));
-      setTimeout(() => document.getElementById('statusInput').focus(), 220);
+  // ── CHECK STATUS MODAL ──
+function openCheckStatusModal() {
+  document.getElementById('statusInput').value   = '';
+  document.getElementById('statusResult').innerHTML = '';
+  document.getElementById('statusLoading').style.display = 'none';
+  openModal(document.getElementById('checkStatusModal'));
+  setTimeout(() => document.getElementById('statusInput').focus(), 220);
+}
+
+document.getElementById('statusCloseBtn').addEventListener('click', () => {
+  closeModal(document.getElementById('checkStatusModal'));
+});
+
+document.getElementById('statusCheckBtn').addEventListener('click', () => {
+  const input     = document.getElementById('statusInput').value.trim(); // Don't uppercase yet
+  const resultEl  = document.getElementById('statusResult');
+  const loadingEl = document.getElementById('statusLoading');
+
+  console.log('🔍 Search Input:', input);
+
+  if (!input) {
+    resultEl.innerHTML = '<div class="status-result not-found"><strong style="color:#f87171;">❌ Please enter a phone number or confirmation code</strong></div>';
+    return;
+  }
+
+  loadingEl.style.display = 'block';
+  resultEl.innerHTML = '';
+
+  registrationsRef.once('value', snapshot => {
+    loadingEl.style.display = 'none';
+
+    console.log('📊 Database Connected:', snapshot.exists());
+
+    if (!snapshot.exists()) {
+      resultEl.innerHTML = '<div class="status-result not-found"><strong style="color:#f87171;">❌ No registrations in database</strong></div>';
+      return;
     }
-    document.getElementById('statusCloseBtn').addEventListener('click', () => {
-      closeModal(document.getElementById('checkStatusModal'));
-    });
 
-    document.getElementById('statusCheckBtn').addEventListener('click', () => {
-      const input     = document.getElementById('statusInput').value.trim().toUpperCase();
-      const resultEl  = document.getElementById('statusResult');
-      const loadingEl = document.getElementById('statusLoading');
-
-      if (!input) {
-        resultEl.innerHTML = '<div class="status-result not-found"><strong style="color:#f87171;">Please enter a phone number or confirmation code</strong></div>';
-        return;
-      }
-
-      loadingEl.style.display = 'block';
-      resultEl.innerHTML = '';
-
-      registrationsRef.once('value', snapshot => {
-        loadingEl.style.display = 'none';
-
-        if (!snapshot.exists()) {
-          resultEl.innerHTML = '<div class="status-result not-found"><strong style="color:#f87171;">❌ No registration found</strong></div>';
-          return;
-        }
-
-        const all = [];
-        snapshot.forEach(child => all.push({ id: child.key, ...child.val() }));
-
-        let found = all.filter(r => r.confirmationCode && r.confirmationCode.toUpperCase() === input);
-        if (found.length === 0 && input.replace(/[^0-9]/g, '').length >= 7) {
-          const clean = input.replace(/[^0-9]/g, '');
-          found = all.filter(r => {
-            const cp = (r.phone || '').replace(/[^0-9]/g, '');
-            return cp.includes(clean) || clean.includes(cp);
-          });
-        }
-
-        if (found.length === 0) {
-          resultEl.innerHTML = '<div class="status-result not-found"><strong style="color:#f87171;">❌ No registration found</strong><div class="status-detail" style="margin-top:8px; color:#f87171;">Please check and try again</div></div>';
-          return;
-        }
-        found.length === 1 ? displaySingleAccountWithQR(found[0], resultEl) : displayMultipleAccountsWithQR(found, resultEl);
+    const all = [];
+    snapshot.forEach(child => {
+      all.push({ 
+        id: child.key, 
+        ...child.val() 
       });
     });
+
+    console.log('📋 Total Registrations:', all.length);
+    console.log('📋 All Data:', all);
+
+    let found = [];
+
+    // ===== METHOD 1: Try Confirmation Code Match =====
+    const inputUpper = input.toUpperCase().trim();
+    found = all.filter(r => {
+      const code = (r.confirmationCode || '').toUpperCase().trim();
+      console.log('Comparing code:', code, '===', inputUpper, '→', code === inputUpper);
+      return code === inputUpper;
+    });
+
+    console.log('✅ Found by Code:', found.length);
+
+    // ===== METHOD 2: Try Phone Number Match =====
+    if (found.length === 0) {
+      const clean = input.replace(/[^0-9]/g, '');
+      console.log('🔢 Cleaned Input:', clean, '(length:', clean.length, ')');
+
+      if (clean.length >= 7) {
+        found = all.filter(r => {
+          const cp = (r.phone || '').replace(/[^0-9]/g, '');
+          
+          // Match if:
+          // 1. Phone contains the input digits
+          // 2. Input contains the phone digits
+          // 3. Last 10 digits match
+          const match = cp.includes(clean) || clean.includes(cp) || cp.endsWith(clean);
+          
+          console.log('Comparing phone:', cp, 'vs clean:', clean, '→', match);
+          
+          return match;
+        });
+      } else {
+        console.log('❌ Input too short for phone search (need 7+ digits)');
+      }
+    }
+
+    console.log('🎯 Final Found Records:', found.length);
+
+    if (found.length === 0) {
+      resultEl.innerHTML = `<div class="status-result not-found">
+        <strong style="color:#f87171;">❌ No Registration Found</strong>
+        <div class="status-detail" style="margin-top:8px; color:#f87171;">
+          <small>No match for: <strong>"${input}"</strong></small>
+          <br><small style="margin-top:4px; display:block;">Try your phone number or confirmation code</small>
+        </div>
+      </div>`;
+      return;
+    }
+
+    if (found.length === 1) {
+      displaySingleAccountWithQR(found[0], resultEl);
+    } else {
+      displayMultipleAccountsWithQR(found, resultEl);
+    }
+  });
+});
+
+// ── DISPLAY SINGLE ACCOUNT WITH QR ──
+function displaySingleAccountWithQR(record, resultEl) {
+  console.log('📌 Single Account:', record);
+
+  const statusBadge = record.paymentStatus === 'Paid' 
+    ? '<span class="paid-badge">✓ PAID</span>' 
+    : '<span class="pending-badge">⏳ PENDING</span>';
+  
+  const verificationUrl = `${window.location.origin}/verify.html?code=${record.confirmationCode}`;
+
+  resultEl.innerHTML = `
+    <div class="status-result found">
+      <div class="status-detail"><strong>📋 Code:</strong> ${record.confirmationCode}</div>
+      <div class="status-detail"><strong>👤 Name:</strong> ${record.fullName}</div>
+      <div class="status-detail"><strong>📧 Email:</strong> ${record.email}</div>
+      <div class="status-detail"><strong>📱 Phone:</strong> ${record.phone}</div>
+      <div class="status-detail"><strong>⛪ Church:</strong> ${record.church}</div>
+      <div class="status-detail"><strong>📍 Location:</strong> ${record.location}</div>
+      <div class="status-detail"><strong>🎯 Role:</strong> ${record.role}</div>
+      <div class="status-detail"><strong>💰 Amount:</strong> ₹${record.amount || 1200}</div>
+      ${statusBadge}
+      <div style="background:white;padding:8px;border-radius:6px;margin-top:12px;text-align:center;" id="statusQrCode"></div>
+      <button class="submit-btn" id="doneBtn" style="margin-top:12px;width:100%;">Done</button>
+    </div>`;
+
+  new QRCode(document.getElementById('statusQrCode'), {
+    text: verificationUrl,
+    width: 150,
+    height: 150,
+    colorDark: '#000',
+    colorLight: '#fff',
+    correctLevel: QRCode.CorrectLevel.H
+  });
+
+  document.getElementById('doneBtn').addEventListener('click', () => {
+    closeModal(document.getElementById('checkStatusModal'));
+  });
+}
+
+// ── DISPLAY MULTIPLE ACCOUNTS WITH QR ──
+function displayMultipleAccountsWithQR(records, resultEl) {
+  console.log('📌 Multiple Accounts:', records.length);
+
+  let html = `<div class="status-result found">
+    <div class="status-detail" style="margin-bottom:12px;">
+      <strong style="color:#10b981;">✓ Found ${records.length} account(s):</strong>
+    </div>
+    <div class="customer-accounts-container">`;
+
+  records.forEach((record, index) => {
+    const isPaid = record.paymentStatus === 'Paid';
+    const statusBadge = isPaid ? '✓ PAID' : '⏳ PENDING';
+    const statusClass = isPaid ? 'account-status' : 'account-status pending';
+
+    html += `
+      <div class="account-card">
+        <div class="account-header">
+          <div class="account-code">${record.confirmationCode}</div>
+          <span class="${statusClass}">${statusBadge}</span>
+        </div>
+        <div class="account-info">
+          <div class="account-info-row"><strong>👤 Name:</strong> ${record.fullName}</div>
+          <div class="account-info-row"><strong>📧 Email:</strong> ${record.email}</div>
+          <div class="account-info-row"><strong>📱 Phone:</strong> ${record.phone}</div>
+          <div class="account-info-row"><strong>⛪ Church:</strong> ${record.church}</div>
+          <div class="account-info-row"><strong>📍 Location:</strong> ${record.location}</div>
+          <div class="account-info-row"><strong>🎯 Role:</strong> ${record.role}</div>
+          <div class="account-info-row"><strong>💰 Amount:</strong> ₹${record.amount || 1200}</div>
+        </div>
+        <div class="account-qr" id="statusQr_${index}"></div>
+      </div>`;
+  });
+
+  html += `</div><button class="submit-btn" id="doneBtn" style="margin-top:12px;width:100%;">Done</button></div>`;
+  resultEl.innerHTML = html;
+
+  records.forEach((record, index) => {
+    const verificationUrl = `${window.location.origin}/verify.html?code=${record.confirmationCode}`;
+    new QRCode(document.getElementById(`statusQr_${index}`), {
+      text: verificationUrl,
+      width: 120,
+      height: 120,
+      colorDark: '#000',
+      colorLight: '#fff',
+      correctLevel: QRCode.CorrectLevel.H
+    });
+  });
+
+  document.getElementById('doneBtn').addEventListener('click', () => {
+    closeModal(document.getElementById('checkStatusModal'));
+  });
+}
+
+document.getElementById('statusInput').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') document.getElementById('statusCheckBtn').click();
+});
 
     function displaySingleAccountWithQR(record, resultEl) {
       const statusBadge      = record.paymentStatus === 'Paid' ? '<span class="paid-badge">✓ PAID</span>' : '<span class="pending-badge">⏳ PENDING</span>';
